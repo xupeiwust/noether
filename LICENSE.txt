@@ -1,0 +1,16 @@
+EMMI AI LICENSE SUMMARY
+
+Copyright ©2025 Emmi AI GmbH. All rights reserved.
+
+This software package ("Software") is the confidential and proprietary property
+of Emmi AI GmbH.
+
+Condition of Use: Access to and use of this Software is permitted ONLY for
+individuals or entities who have entered into a valid, binding contractual
+agreement (such as a purchase license, subscription agreement, or other
+explicit permission) with Emmi AI GmbH authorizing such use.
+
+Any use, copying, distribution, or modification of this Software without such an
+agreement is strictly forbidden and constitutes a violation of intellectual
+property rights and contractual terms. Refer to your governing agreement with
+Emmi AI GmbH for full terms and conditions.

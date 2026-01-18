@@ -1,0 +1,232 @@
+#  Copyright © 2025 Emmi AI GmbH. All rights reserved.
+
+from __future__ import annotations
+
+import os
+import sys
+from datetime import datetime
+
+# Path to src/
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+SRC = os.path.join(ROOT, "src")
+sys.path.insert(0, SRC)
+
+project = "Noether Framework"
+author = "Emmi AI Developers"
+copyright = f"{datetime.now():%Y}, {author}"
+
+extensions = [
+    "sphinx.ext.autodoc",
+    "sphinx.ext.napoleon",
+    "sphinx.ext.intersphinx",
+    # "sphinx.ext.viewcode",
+    "sphinx_autodoc_typehints",
+    "autoapi.extension",  # <-- use AutoAPI
+    # Optional if you want Markdown pages:
+    # "myst_parser",
+    # Optional if you want CLI docs:
+    # "sphinx_click",
+]
+extensions += ["sphinx_design"]
+extensions += ["myst_parser"]  # for Markdown code blocks parsing
+# --- THEME CUSTOMIZATION:
+html_theme = "furo"
+
+EMMI_THEME = {
+    # Light — PURPLE
+    "light_css_variables": {
+        # Brand + links
+        "color-brand-primary": "#661371",
+        "color-brand-content": "#661371",
+        "color-link": "#4B0357",
+        "color-link--hover": "#BC48BF",
+        "color-link--visited": "#DB8AFF",  # washed-out (lighter)
+        # Text + surfaces
+        "color-foreground-primary": "#222222",
+        "color-foreground-secondary": "#555555",
+        "color-background-primary": "#FFFFFF",
+        "color-background-secondary": "#F7F7F9",
+        "color-sidebar-background": "#FAFAFC",
+        # Code
+        "color-code-background": "#F5F7F9",
+        "color-code-foreground": "#222222",
+        # Sidebar hierarchy + states
+        "color-sidebar-link-text--top-level": "#661371",
+        "color-sidebar-link-text": "#555555",  # 2nd level
+        "color-sidebar-link-text--hover": "#BC48BF",
+        "color-sidebar-link-text--current": "#661371",
+        "color-sidebar-link-background--hover": "#EEEAF1",
+        "color-background-border": "rgba(0,0,0,0.08)",
+    },
+    # Dark — TEAL
+    # "dark_css_variables": {
+    #     # Brand + links
+    #     "color-brand-primary": "#00A392",
+    #     "color-brand-content": "#00A392",
+    #     "color-link": "#00A392",
+    #     "color-link--hover": "#00EAD3",
+    #     "color-link--visited": "#007367",  # washed-out (darker)
+    #     # Text + dark greys
+    #     "color-foreground-primary": "#EDEDED",
+    #     "color-foreground-secondary": "#BEBEBE",
+    #     "color-background-primary": "#1E1E1E",
+    #     "color-background-secondary": "#2A2A2A",
+    #     "color-sidebar-background": "#242424",
+    #     # Code
+    #     "color-code-background": "#1B1B1B",
+    #     "color-code-foreground": "#EDEDED",
+    #     # Sidebar hierarchy + states
+    #     "color-sidebar-link-text--top-level": "#00A392",
+    #     "color-sidebar-link-text": "#CFCFCF",  # 2nd level
+    #     "color-sidebar-link-text--hover": "#00EAD3",
+    #     "color-sidebar-link-text--current": "#00A392",
+    #     "color-sidebar-link-background--hover": "#a1a1a1",
+    #     # "color-sidebar-item-background": "",
+    #     "color-background-border": "rgba(255,255,255,0.08)",
+    # },
+    "dark_css_variables": {
+        # Brand + links
+        "color-brand-primary": "#661371",
+        "color-brand-content": "#661371",
+        "color-link": "#4B0357",
+        "color-link--hover": "#BC48BF",
+        "color-link--visited": "#DB8AFF",  # washed-out (lighter)
+        # Text + surfaces
+        "color-foreground-primary": "#222222",
+        "color-foreground-secondary": "#555555",
+        "color-background-primary": "#FFFFFF",
+        "color-background-secondary": "#F7F7F9",
+        "color-sidebar-background": "#FAFAFC",
+        # Code
+        "color-code-background": "#F5F7F9",
+        "color-code-foreground": "#222222",
+        # Sidebar hierarchy + states
+        "color-sidebar-link-text--top-level": "#661371",
+        "color-sidebar-link-text": "#555555",  # 2nd level
+        "color-sidebar-link-text--hover": "#BC48BF",
+        "color-sidebar-link-text--current": "#661371",
+        "color-sidebar-link-background--hover": "#EEEAF1",
+        "color-background-border": "rgba(0,0,0,0.08)",
+    },
+}
+
+html_theme_options = {
+    "sidebar_hide_name": True,
+    "navigation_with_keys": True,
+    **EMMI_THEME,
+    # "logo": {},  # create an empty dict for potential light/dark modes updates
+    "show_powered_by": False,
+}
+
+# Syntax highlighting that pairs well with both palettes
+pygments_style = "friendly"  # light
+pygments_dark_style = "friendly"  # dark
+# pygments_dark_style = "monokai"  # dark
+
+# ---
+
+# Google-style docstrings
+napoleon_google_docstring = True
+napoleon_numpy_docstring = False
+napoleon_include_init_with_doc = True
+napoleon_attr_annotations = True
+
+# Types in param blocks
+autodoc_typehints = "description"
+autodoc_typehints_format = "short"
+typehints_fully_qualified = False
+always_document_param_types = True
+
+# Let AutoAPI produce API pages from src/
+autoapi_type = "python"
+autoapi_dirs = [SRC]
+autoapi_add_toctree_entry = False
+autoapi_member_order = "bysource"  # preserve source order
+autoapi_python_class_content = "both"  # class doc + __init__ doc together
+autoapi_keep_files = False
+autoapi_options = [
+    "members",
+    "undoc-members",
+    "show-inheritance",
+    "show-module-summary",
+    # comment back in if you need them:
+    # "imported-members",
+    "no-private-members",
+    "no-special-members",
+    "no-module-attributes",
+]
+autoapi_ignore = [
+    "**/tests/**",
+    "**/docs/**",
+    "**/*.ipynb",
+    "**/*.md",
+    "**/.venv/**",
+]
+
+
+# Do NOT have autosummary import modules
+autosummary_generate = False
+
+# Intersphinx (drop typer to avoid 404)
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3", None),
+    "boto3": ("https://boto3.amazonaws.com/v1/documentation/api/latest/", None),
+}
+
+templates_path = ["_templates"]
+exclude_patterns = [
+    "_build",
+    "Thumbs.db",
+    ".DS_Store",
+    # If old apidoc output exists, ignore it:
+    "emmi_inference/generated/**",
+    "noether/generated/**",
+    "**/*.ipynb",
+    "**/*.md",
+]
+html_static_path = ["_static"]
+html_css_files = ["emmi_docs_theme.css"]
+html_js_files = ["force_light_theme.js"]
+html_logo = "_static/Emmi_AI_logo_black.svg"  # this works
+# This doesn't work, not sure how to make it light/dark mode agnostic yet:
+# if isinstance(html_theme_options["logo"], dict):
+#     html_theme_options["logo"].update({
+#         "image_light": "_static/Emmi_AI_logo_black.svg",
+#         "image_dark": "_static/Emmi_AI_logo_green.svg",
+#     })
+
+
+def skip_handler(app, what, name, obj, skip, options):
+    if what == "class":
+        # Check if the docstring exists and matches the parent
+        if (
+            obj.docstring
+            and type(obj.docstring) == str
+            and obj.docstring.startswith('!!! abstract "Usage Documentation"')
+        ):
+            obj.docstring = ""  # Wipe the inherited docstring
+
+    if getattr(obj, "inherited", False):
+        # Skip all inherited attributes from BaseModel (pydantic) to reduce noise
+        if "BaseModel" in name or "pydantic" in name:
+            return True
+
+    WHITELIST = [
+        "_sampler_config_from_key",
+        "_periodic_callback",
+        "_before_training",
+        "_after_training",
+        "_track_after_accumulation_step",
+        "_track_after_update_step",
+        "_forward",
+        "process_results",
+    ]
+
+    # Allow certain private methods that are important for understanding the class behavior
+    if what == "method" and name.split(".")[-1] in WHITELIST and not getattr(obj, "inherited", False):
+        return False
+    return skip
+
+
+def setup(app):
+    app.connect("autoapi-skip-member", skip_handler)

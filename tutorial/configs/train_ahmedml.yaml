@@ -1,0 +1,9 @@
+# @package _global_
+
+# Define key values here that are used multiple times in the config files.
+dataset_root:  /nfs-gpu/research/datasets/ahmedml/preprocessed/subsampled_10x
+dataset_kind: noether.data.datasets.cfd.AhmedMLDataset
+
+defaults:
+  - train_caeml 
+  - dataset_statistics: ahmedml_stats

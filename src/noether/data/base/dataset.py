@@ -1,0 +1,162 @@
+#  Copyright © 2025 Emmi AI GmbH. All rights reserved.
+
+from __future__ import annotations
+
+import functools
+import logging
+from collections.abc import Iterator
+from typing import Any
+
+from torch.utils.data import Dataset as TorchDataset
+
+from noether.core.factory import Factory
+from noether.core.schemas.dataset import DatasetBaseConfig
+from noether.data.pipeline import Collator, MultiStagePipeline
+from noether.data.preprocessors import ComposePreProcess, PreProcessor
+
+
+def with_normalizers(normalizer_key: str):
+    """Decorator to apply a normalizer to the output of a getitem_* function of the implemented Dataset class.
+
+    This decorator will look for a normalizer registered under the specified key and apply it to the output of the decorated function.
+    Exaple usage:
+    >>> @with_normalizers("image")
+    >>> def getitem_image(self, idx):
+    >>> # Load image tensor
+    >>>     return torch.load(f"{self.path}/image_tensor/{idx}.pt")
+
+    Args:
+        normalizer_key: The key of the normalizer to apply. This key should be present in the self.normalizers dictionary of the Dataset class.
+    """
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            data = fn(self, *args, **kwargs)
+            if self.compute_statistics:
+                return data
+            try:
+                registry_attribute = "normalizers"
+                normalizers = getattr(self, registry_attribute)
+            except AttributeError as exc:
+                raise AttributeError(
+                    f"{self.__class__.__name__}.{registry_attribute} not found; "
+                    f"required for with_normalizers('{normalizer_key}' method to have the normalizers attribute)"
+                ) from exc
+            try:
+                normalizer = normalizers[normalizer_key]
+            except KeyError:
+                available_keys = list(normalizers.keys())
+                raise KeyError(
+                    f"Normalizer key '{normalizer_key}' not found. Normalizers are available for the following getitem_ methods: {available_keys}"
+                ) from None
+            data = normalizer(data)
+            return data
+
+        return wrapper
+
+    return decorator
+
+
+class Dataset(TorchDataset):
+    """Ksuit dataset implementation, which is a wrapper around torch.utils.data.Dataset that can hold a dataset_config_provider.
+    A dataset should map a key (i.e., an index) to its corresponding data.
+    Each sub-class should implement individual getitem_* methods, where * is the name of an item in the dataset.
+    Each getitem_* method loads an individual tensor/data sample from disk.
+    For example, if you dataset consists of images and targets/labels (stored as tensors), a getitem_image(idx) and getitem_target(idx) method should be implemented in the dataset subclass.
+    The __getitem__ method of this class will loop over all the individual getitem_* methods implemented by the child class and return their results.
+    Optionally it is possible to configure which getitem methods are called.
+
+    Example: Image classification datasets
+        >>> class ImageDataset(Dataset):
+        >>>     def __init__(self, path, dataset_normalizers, **kwargs):
+        >>>         super().__init__(dataset_normalizers=dataset_normalizers, **kwargs)
+        >>>         self.path = path
+        >>>     def __len__(self):
+        >>>         return 100  # Example length
+        >>>     def getitem_image(self, idx):
+        >>> # Load image tensor
+        >>>         return torch.load(f"{self.path}/image_tensor/{idx}.pt")
+        >>>     def getitem_target(self, idx):
+        >>> # Load target tensor
+        >>>         return torch.load(f"{self.path}/target_tensor/{idx}.pt")
+        >>>
+        >>> dataset = ImageDataset("path/to/dataset")
+        >>> sample0 = dataset[0]
+        >>> image_0 = sample0["image"]
+        >>> target_0 = sample0["target"]
+
+    Data from a getitem method should be normalized in many cases. To apply normalization, add a the decorator function to the getitem method.
+    For example:
+        >>> @with_normalizers("image")
+        >>> def getitem_image(self, idx):
+        >>> # Load image tensor
+        >>>    return torch.load(f"{self.path}/image_tensor/{idx}.pt")
+
+    "image" is the key in the self.normalizers dictionary, this key maps to a preprocessor that should implement the correct data normalization.
+    """
+
+    def __init__(
+        self,
+        dataset_config: DatasetBaseConfig,
+    ):
+        """
+
+        Args:
+        dataset_config_provider: Optional provider for dataset configuration.
+        dataset_normalizers: A dictionary that contains normalization ComposePreProcess(ers) for each data type. The key for each normalizer can be used in the with_normalizers decorator.
+        """
+        super().__init__()
+        self.logger = logging.getLogger(type(self).__name__)
+        self._pipeline: Collator | MultiStagePipeline | None = None
+        self.config = dataset_config
+        self.normalizers: dict[str, ComposePreProcess] = {}
+        self.compute_statistics = False
+        if dataset_config.dataset_normalizers:
+            for key, normalizer_configs in dataset_config.dataset_normalizers.items():
+                preprocessors: list[PreProcessor] = []
+                for normalizer_config in normalizer_configs:
+                    preprocessors.append(Factory().instantiate(normalizer_config, normalization_key=key))
+                self.normalizers[key] = ComposePreProcess(normalization_key=key, preprocessors=preprocessors)
+
+    @property
+    def pipeline(self) -> Collator | None:
+        """Returns the pipeline for the dataset."""
+        return self._pipeline
+
+    @pipeline.setter
+    def pipeline(self, pipeline: Collator) -> None:
+        """Sets the pipeline for the dataset."""
+        if not isinstance(pipeline, Collator):
+            raise TypeError(f"Expected Collator instance, got {type(pipeline)}")
+        self._pipeline = pipeline
+
+    def __len__(self) -> int:
+        raise NotImplementedError("__len__ method must be implemented")
+
+    def __getitem__(self, idx: int) -> Any:
+        """Calls all implemented getitem methods and returns the results
+
+        Returns:
+            dict[key, Any]: dictionary of all getitem result
+        """
+        result = dict(index=idx)
+        getitem_names = self.get_all_getitem_names()
+        for getitem_name in getitem_names:
+            getitem_fn = getattr(self, getitem_name)
+            result[getitem_name[len("getitem_") :]] = getitem_fn(idx)
+        return result
+
+    def __iter__(self) -> Iterator[Any]:
+        """torch.utils.data.Dataset doesn't define __iter__ which makes 'for sample in dataset' run endlessly.
+
+        Returns:
+            Iterator[Any]: an iterator of the type that would be returned by __getitem__
+        """
+        for i in range(len(self)):
+            yield self[i]
+
+    def get_all_getitem_names(self) -> list[str]:
+        """Returns all names of getitem functions that are implemented. E.g., image classification has getitem_x and
+        getitem_class -> the result will be ["x", "class"]."""
+        return [attr for attr in dir(self) if attr.startswith("getitem_") and callable(getattr(self, attr))]

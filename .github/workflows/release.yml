@@ -1,0 +1,94 @@
+name: Create and Publish Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: 'The type of version bump (patch, minor, major)'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write  # Required to create tags and releases
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch all history so we can find the latest tag
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Calculate next version 🤖
+        id: versioning
+        run: |
+          # Get the latest tag, or default to v0.1.0 if no tags exist
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          LATEST_VERSION=${LATEST_TAG#v} # Strip 'v' prefix
+
+          # Split version into parts
+          IFS='.' read -ra V <<< "$LATEST_VERSION"
+          MAJOR=${V[0]}
+          MINOR=${V[1]}
+          PATCH=${V[2]}
+
+          # Bump version based on input
+          case "${{ github.event.inputs.version_type }}" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "New version tag: $NEW_TAG"
+          echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
+
+      - name: Create and push Git tag
+        run: |
+          git tag ${{ steps.versioning.outputs.tag }} -m "Release ${{ steps.versioning.outputs.tag }}"
+          git push origin ${{ steps.versioning.outputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Build all workspace packages
+        run: |
+          for package_path in src/noether
+          do
+            echo "--- Building ${package_path} ---"
+            uv build --out-dir dist "${package_path}"
+          done
+
+      - name: Create GitHub Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.versioning.outputs.tag }}
+          generate_release_notes: true
+          files: dist/*.whl  # Upload all built wheel files

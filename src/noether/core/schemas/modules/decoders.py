@@ -1,0 +1,16 @@
+#  Copyright © 2025 Emmi AI GmbH. All rights reserved.
+
+from pydantic import BaseModel, Field
+
+from noether.core.schemas.modules.blocks import PerceiverBlockConfig
+
+
+class DeepPerceiverDecoderConfig(BaseModel):
+    """Configuration for the DeepPerceiverDecoder module."""
+
+    perceiver_block_config: PerceiverBlockConfig = Field(...)
+    """Configuration for the Perceiver blocks used in the decoder."""
+    depth: int = Field(1)
+    """Number of deep perceiver decoder layers (i.e., depth of the network). Defaults to 1."""
+    input_dim: int = Field(...)
+    """Input dimension for the query positions."""

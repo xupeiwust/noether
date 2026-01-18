@@ -1,0 +1,763 @@
+#  Copyright © 2025 Emmi AI GmbH. All rights reserved.
+
+from __future__ import annotations
+
+import math
+import sys
+from abc import ABCMeta, abstractmethod
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any, Literal
+
+import numpy as np
+import torch
+from torch.utils.data import DistributedSampler, SequentialSampler
+from tqdm import tqdm
+
+from noether.core.callbacks.base import CallbackBase
+from noether.core.distributed import all_gather_nograd, all_gather_nograd_clipped
+from noether.core.distributed.config import is_distributed, is_rank0
+from noether.core.models import ModelBase
+from noether.core.providers import MetricPropertyProvider
+from noether.core.schemas.callbacks import CallBackBaseConfig
+from noether.core.trackers import BaseTracker
+from noether.core.utils.common import snake_type_name
+from noether.core.utils.common.stopwatch import Stopwatch
+from noether.core.utils.logging import NoopTqdm, tensor_like_to_string
+from noether.core.utils.torch import move_items_to_device
+from noether.core.utils.training.counter import UpdateCounter
+from noether.core.utils.training.training_iteration import TrainingIteration
+from noether.core.writers import CheckpointWriter, LogWriter
+from noether.data.base.dataset import Dataset
+from noether.data.samplers import SamplerIntervalConfig
+
+if TYPE_CHECKING:
+    from noether.data.container import DataContainer
+    from noether.training.trainers import BaseTrainer
+
+
+IntervalType = Literal["epoch", "update", "sample"]
+"""Type alias for periodic callback interval types.
+
+Defines the unit of training progress used to trigger periodic callbacks:
+* "epoch": Callback is triggered based on completed epochs
+* "update": Callback is triggered based on optimizer update steps
+* "sample": Callback is triggered based on number of samples processed
+"""
+
+
+class PeriodicCallback(CallbackBase):
+    """Base class for callbacks that are invoked periodically during training.
+
+    PeriodicCallback extends CallbackBase to support periodic execution based on training progress. Callbacks can be
+    configured to run at regular intervals defined by epochs, updates (optimizer steps), or samples (data points
+    processed). This class implements the infrastructure for periodic invocation while child classes define the actual
+    behavior via the `_periodic_callback` method.
+
+    The class follows the template method design pattern similar to CallbackBase: public methods (e.g., `after_update`,
+    `after_epoch`) implement invariant behavior (checking intervals, applying torch.no_grad()), while template methods
+    prefixed with underscore (e.g., `_periodic_callback`, `_track_after_update_step`) should be overridden by child
+    classes.
+
+    Interval Configuration:
+        Callbacks can be configured to run periodically using one or more of:
+        * `every_n_epochs`: Execute callback every N epochs
+        * `every_n_updates`: Execute callback every N optimizer updates
+        * `every_n_samples`: Execute callback every N samples processed
+
+        Multiple intervals can be active simultaneously. For example, setting both `every_n_epochs=1` and
+        `every_n_updates=100` will trigger the callback at the end of each epoch AND every 100 updates.
+
+    Tracking vs. Periodic Execution:
+        The class provides two types of hooks:
+        * Tracking hooks (`_track_after_accumulation_step`, `_track_after_update_step`): Called on every
+          accumulation/update step to track metrics continuously (e.g., for running averages).
+        * Periodic hook (`_periodic_callback`): Called only when the configured interval is reached, typically for
+          expensive operations like evaluation or checkpointing.
+
+    Examples:
+        Creating a custom periodic callback that logs metrics every 10 epochs:
+
+        .. code-block:: python
+
+            class CustomMetricCallback(PeriodicCallback):
+                def _periodic_callback(
+                    self,
+                    *,
+                    interval_type: IntervalType,
+                    update_counter: UpdateCounter,
+                    **kwargs,
+                ) -> None:
+                    # This method is called every 10 epochs
+                    metric_value = self.compute_expensive_metric()
+                    self.writer.add_scalar(
+                        key="custom_metric",
+                        value=metric_value,
+                        logger=self.logger,
+                    )
+
+
+            # Configure in YAML:
+            # callbacks:
+            #   - kind: CustomMetricCallback
+            #     every_n_epochs: 10
+
+        Tracking metrics at every update and logging periodically:
+
+        .. code-block:: python
+
+            class RunningAverageCallback(PeriodicCallback):
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    self.loss_accumulator = []
+
+                def _track_after_update_step(self, *, update_counter: UpdateCounter, times: dict[str, float]) -> None:
+                    # Track at every update
+                    self.loss_accumulator.append(self.trainer.last_loss)
+
+                def _periodic_callback(
+                    self,
+                    *,
+                    interval_type: IntervalType,
+                    update_counter: UpdateCounter,
+                    **kwargs,
+                ) -> None:
+                    # Log periodically
+                    avg_loss = sum(self.loss_accumulator) / len(self.loss_accumulator)
+                    self.writer.add_scalar("avg_loss", avg_loss, logger=self.logger)
+                    self.loss_accumulator.clear()
+
+    Attributes:
+        every_n_epochs: If set, callback is invoked every N epochs.
+        every_n_updates: If set, callback is invoked every N optimizer updates.
+        every_n_samples: If set, callback is invoked every N samples processed.
+        batch_size: Batch size used during training.
+        evaluation: Evaluation configuration.
+
+    Note:
+        Child classes should NOT override the public methods (`after_update`, `after_epoch`,
+        `track_after_accumulation_step`, `track_after_update_step`). Instead, override the template methods prefixed
+        with underscore (`_periodic_callback`, `_track_after_update_step`, `_track_after_accumulation_step`).
+    """
+
+    def __init__(
+        self,
+        callback_config: CallBackBaseConfig,
+        trainer: BaseTrainer,
+        model: ModelBase,
+        data_container: DataContainer,
+        tracker: BaseTracker,
+        log_writer: LogWriter,
+        checkpoint_writer: CheckpointWriter,
+        metric_property_provider: MetricPropertyProvider,
+        name: str | None = None,
+    ):
+        """Initializes the `PeriodicCallback`.
+
+        Args:
+            callback_config: Configuration of the `PeriodicCallback`.
+            trainer: Trainer of the current run.
+            model: Model of the current run.
+            data_container: DataContainer instance that provides access to all datasets.
+            tracker: Tracker instance to log metrics to stdout/disk/online platform.
+            log_writer: LogWriter instance to log metrics.
+            checkpoint_writer: CheckpointWriter instance to save checkpoints.
+            metric_property_provider: MetricPropertyProvider instance to access properties of metrics.
+            name: Name of the callback.
+        """
+        super().__init__(
+            trainer, model, data_container, tracker, log_writer, checkpoint_writer, metric_property_provider, name
+        )
+
+        self.every_n_epochs = callback_config.every_n_epochs
+        self.every_n_updates = callback_config.every_n_updates
+        self.every_n_samples = callback_config.every_n_samples
+        self.batch_size = callback_config.batch_size
+        self.evaluation = callback_config.evaluation
+
+        # check that children only override their implementation methods
+        if not (type(self).track_after_accumulation_step == PeriodicCallback.track_after_accumulation_step):
+            raise AssertionError("Children shouldn't override 'track_after_accumulation_step'")
+        if not (type(self).track_after_update_step == PeriodicCallback.track_after_update_step):
+            raise AssertionError("Children shouldn't override 'track_after_update_step'")
+        if not (type(self).after_update == PeriodicCallback.after_update):
+            raise AssertionError("Children shouldn't override 'after_update'")
+        if not (type(self).after_epoch == PeriodicCallback.after_epoch):
+            raise AssertionError("Children shouldn't override 'after_epoch'")
+
+    def __str__(self):
+        return f"{type(self).__name__}({self.get_interval_string_verbose()})"
+
+    def should_log_after_epoch(self, training_iteration: TrainingIteration) -> bool:
+        """Checks after every epoch if the `PeriodicCallback` should be invoked.
+
+        Args:
+            training_iteration: TrainingIteration to check.
+        """
+        return (
+            self.every_n_epochs is not None
+            and training_iteration.epoch is not None
+            and training_iteration.epoch % self.every_n_epochs == 0
+        )
+
+    def should_log_after_update(self, training_iteration: TrainingIteration) -> bool:
+        """Checks after every update if the `PeriodicCallback` should be invoked.
+
+        Args:
+            training_iteration: TrainingIteration to check.
+        """
+        return (
+            self.every_n_updates is not None
+            and training_iteration.update is not None
+            and training_iteration.update % self.every_n_updates == 0
+        )
+
+    def should_log_after_sample(self, training_iteration: TrainingIteration, effective_batch_size: int) -> bool:
+        """Checks after every sample if the `PeriodicCallback` should be invoked.
+
+        Args:
+            training_iteration: TrainingIteration to check.
+            effective_batch_size: Effective batch size to use for the check (required for checking how many samples
+                have been processed since the last update).
+        """
+        if self.every_n_samples is not None and training_iteration.sample is not None:
+            last_update_samples = training_iteration.sample - effective_batch_size
+            prev_log_step = int(last_update_samples / self.every_n_samples)
+            cur_log_step = int(training_iteration.sample / self.every_n_samples)
+            if cur_log_step > prev_log_step:
+                return True
+        return False
+
+    def _track_after_accumulation_step(
+        self,
+        *,
+        update_counter: UpdateCounter,
+        batch: Any,
+        losses: dict[str, torch.Tensor],
+        update_outputs: dict[str, torch.Tensor] | None,
+        accumulation_steps: int | None,
+        accumulation_step: int | None,
+    ) -> None:
+        """Invoked after every gradient accumulation step. May be used to track metrics.
+
+        Args:
+            update_counter: UpdateCounter instance to access current training progress.
+            batch: Current batch.
+            losses: Losses computed for the current batch.
+            update_outputs: Outputs of the model for the current batch.
+            accumulation_steps: Total number of accumulation steps.
+            accumulation_step: Current accumulation step.
+        """
+
+    def _track_after_update_step(self, *, update_counter: UpdateCounter, times: dict[str, float]) -> None:
+        """Invoked after every update step. May be used to track metrics.
+
+        Args:
+            update_counter: UpdateCounter instance to access current training progress.
+            times: Dictionary containing time measurements.
+        """
+
+    def _periodic_callback(
+        self,
+        *,
+        interval_type: IntervalType,
+        update_counter: UpdateCounter,
+        **kwargs,
+    ) -> None:
+        """Method that is invoked periodically in the defined interval of the `PeriodicCallback`. Child classes should
+        overwrite this method to calculate metrics periodically during training and log them.
+
+        Args:
+            interval_type: "epoch", "update" or "sample" depending on if `every_n_epochs`, `every_n_updates` or
+                `every_n_samples` is defined as field of the `PeriodicCallback`.
+            update_counter: UpdateCounter instance to access current training progress.
+        """
+
+    @torch.no_grad()
+    def track_after_accumulation_step(
+        self,
+        *,
+        update_counter: UpdateCounter,
+        batch: Any,
+        losses: dict[str, torch.Tensor],
+        update_outputs: dict[str, torch.Tensor] | None,
+        accumulation_steps: int,
+        accumulation_step: int,
+    ) -> None:
+        """Invoked after every gradient accumulation step. May be used to track metrics. Applies `torch.no_grad()`.
+
+        Args:
+            update_counter: UpdateCounter instance to access current training progress.
+            batch: Current batch.
+            losses: Losses computed for the current batch.
+            update_outputs: Outputs of the model for the current batch.
+            accumulation_steps: Total number of accumulation steps.
+            accumulation_step: Current accumulation step.
+        """
+        self._track_after_accumulation_step(
+            update_counter=update_counter,
+            batch=batch,
+            losses=losses,
+            update_outputs=update_outputs,
+            accumulation_steps=accumulation_steps,
+            accumulation_step=accumulation_step,
+        )
+
+    @torch.no_grad()
+    def track_after_update_step(self, update_counter: UpdateCounter, times: dict[str, float]) -> None:
+        """Invoked after every update step. May be used to track metrics. Applies `torch.no_grad()`.
+
+        Args:
+            update_counter: UpdateCounter instance to access current training progress.
+            times: Dictionary containing time measurements.
+        """
+        self._track_after_update_step(update_counter=update_counter, times=times)
+
+    @torch.no_grad()
+    def after_epoch(self, update_counter: UpdateCounter, **kwargs) -> None:
+        """Invoked after every epoch to check if callback should be invoked. Applies `torch.no_grad()`.
+
+        Args:
+            update_counter: UpdateCounter instance to access current training progress.
+        """
+        if self.should_log_after_epoch(update_counter.cur_iteration):
+            self._periodic_callback(interval_type="epoch", update_counter=update_counter, **kwargs)
+
+    @torch.no_grad()
+    def after_update(self, update_counter: UpdateCounter, **kwargs) -> None:
+        """Invoked after every update to check if callback should be invoked. Applies `torch.no_grad()`.
+
+        Args:
+            update_counter: UpdateCounter instance to access current training progress.
+        """
+        if type(self)._periodic_callback == PeriodicCallback._periodic_callback:
+            return
+        if self.should_log_after_update(update_counter.cur_iteration):
+            self._periodic_callback(
+                interval_type="update",
+                update_counter=update_counter,
+            )
+        if self.should_log_after_sample(
+            update_counter.cur_iteration,
+            update_counter.effective_batch_size,
+        ):
+            self._periodic_callback(interval_type="sample", update_counter=update_counter, **kwargs)
+
+    def updates_till_next_log(self, update_counter: UpdateCounter) -> int:
+        """Calculates how many updates remain until this callback is invoked.
+
+        Args:
+            update_counter: UpdateCounter instance to access current training progress.
+
+        Returns:
+            Number of updates remaining until the next callback invocation.
+        """
+        updates_per_log_interval = self.updates_per_log_interval(update_counter)
+        if update_counter.cur_iteration.update is None:
+            return updates_per_log_interval
+        return updates_per_log_interval - update_counter.cur_iteration.update % updates_per_log_interval
+
+    def updates_per_log_interval(self, update_counter: UpdateCounter) -> int:
+        """Calculates how many updates are from one invocation of this callback to the next.
+
+        Args:
+            update_counter: UpdateCounter instance to access current training progress.
+
+        Returns:
+            Number of updates between callback invocations.
+        """
+        if self.every_n_epochs is not None:
+            assert self.every_n_updates is None and self.every_n_samples is None
+            return update_counter.updates_per_epoch * self.every_n_epochs
+        if self.every_n_updates is not None:
+            assert self.every_n_epochs is None and self.every_n_samples is None
+            return self.every_n_updates
+        if self.every_n_samples is not None:
+            assert self.every_n_epochs is None and self.every_n_updates is None
+            # NOTE: uneven every_n_samples not supported
+            assert self.every_n_samples % update_counter.effective_batch_size == 0
+            return int(self.every_n_samples / update_counter.effective_batch_size)
+        raise RuntimeError("no interval defined for PeriodicCallback")
+
+    def get_interval_string_verbose(self) -> str:
+        """Returns `every_n_epochs`, `every_n_updates` or `every_n_samples` depending on which one is not None.
+        Returns:
+            str: Interval as, e.g., "every_n_epochs=1" for epoch-based intervals.
+        """
+        results = []
+        if self.every_n_epochs is not None:
+            results.append(f"every_n_epochs={self.every_n_epochs}")
+        if self.every_n_updates is not None:
+            results.append(f"every_n_updates={self.every_n_updates}")
+        if self.every_n_samples is not None:
+            results.append(f"every_n_samples={self.every_n_samples}")
+        return ",".join(results)
+
+    def to_short_interval_string(self) -> str:
+        """Returns `every_n_epochs`, `every_n_updates` or `every_n_samples` depending on which one is not None.
+        Returns:
+            str: Interval as, e.g., "E1" if `every_n_epochs=1` for epoch-based intervals.
+        """
+        results = []
+        if self.every_n_epochs is not None:
+            results.append(f"E{self.every_n_epochs}")
+        if self.every_n_updates is not None:
+            results.append(f"U{self.every_n_updates}")
+        if self.every_n_samples is not None:
+            results.append(f"S{self.every_n_samples}")
+        return "_".join(results)
+
+
+class PeriodicIteratorCallback(PeriodicCallback, metaclass=ABCMeta):
+    """Base class for callbacks that perform periodic iterations over a dataset.
+
+    PeriodicIteratorCallback extends PeriodicCallback to support evaluations or computations that require iterating
+    over an entire dataset. This is commonly used for validation/test set evaluation, computing metrics on held-out
+    data, or any operation that needs to process batches from a dataset at regular training intervals.
+
+    The class integrates with the training data pipeline by registering samplers that control when and how data is
+    loaded. It handles the complete iteration workflow: data loading, forward passes, result collation across
+    distributed ranks, and final processing.
+
+    Workflow:
+        1. **Registration** (`_register_sampler_config`): Register which dataset(s) to iterate over and configure the
+           sampler (sequential or distributed).
+        2. **Iteration** (`_iterate_over_dataset`): When the periodic interval is reached, iterate through the dataset
+           in batches.
+        3. **Forward Pass** (`_forward`): For each batch, perform a forward pass (typically model inference).
+        4. **Collation** (`_collate_result`): Aggregate results across all batches and distributed ranks.
+        5. **Processing** (`_process_results`): Compute final metrics or perform actions with the aggregated results.
+
+    Key Features:
+        * **Distributed Support**: Automatically handles distributed evaluation with proper gathering across ranks and
+          padding removal.
+        * **Flexible Collation**: Supports collating various result types (tensors, dicts of tensors, lists).
+        * **Data Pipeline Integration**: Uses `SamplerIntervalConfig` to integrate with the interleaved sampler for
+          efficient data loading.
+        * **Progress Tracking**: Provides progress bars and timing information for data loading.
+
+    Template Methods to Override:
+        Child classes must implement `_forward` and typically override `_register_sampler_config` and
+        `_process_results`:
+
+        * `_forward`: Process a single batch (e.g., run model inference).
+        * `_register_sampler_config`: Register the dataset to iterate over (default uses `self.dataset_key`).
+        * `_process_results`: Process the aggregated results from all batches.
+
+    Examples:
+        Basic validation accuracy callback that evaluates on a test set every epoch:
+
+        .. code-block:: python
+
+            class AccuracyCallback(PeriodicIteratorCallback):
+                def __init__(self, *args, dataset_key="test", **kwargs):
+                    super().__init__(*args, **kwargs)
+                    self.dataset_key = dataset_key
+
+                def _register_sampler_config(self) -> SamplerIntervalConfig:
+                    # Register test dataset for iteration
+                    return self._sampler_config_from_key(key=self.dataset_key)
+
+                def _forward(self, batch, *, trainer_model):
+                    # Run inference on batch
+                    x = batch["x"].to(trainer_model.device)
+                    y_true = batch["class"].clone()
+                    y_pred = trainer_model(x)
+                    return {"predictions": y_pred, "labels": y_true}
+
+                def _process_results(self, results, *, interval_type, update_counter, **_):
+                    # Compute accuracy from aggregated results
+                    y_pred = results["predictions"]
+                    y_true = results["labels"]
+                    accuracy = (y_pred.argmax(dim=1) == y_true).float().mean()
+
+                    self.writer.add_scalar(
+                        key="test/accuracy",
+                        value=accuracy.item(),
+                        logger=self.logger,
+                        format_str=".4f",
+                    )
+
+
+            # Configure in YAML:
+            # callbacks:
+            #   - kind: AccuracyCallback
+            #     every_n_epochs: 1
+            #     dataset_key: "test"
+
+        Advanced example with multiple return values and custom collation:
+
+        .. code-block:: python
+
+            class DetailedEvaluationCallback(PeriodicIteratorCallback):
+                def _forward(self, batch, *, trainer_model):
+                    x = batch["x"].to(trainer_model.device)
+                    y = batch["label"]
+
+                    # Return multiple outputs as tuple
+                    logits = trainer_model(x)
+                    embeddings = trainer_model.get_embeddings(x)
+                    return logits, embeddings, y
+
+                def _process_results(self, results, *, interval_type, update_counter, **_):
+                    # results is a tuple: (all_logits, all_embeddings, all_labels)
+                    logits, embeddings, labels = results
+
+                    # Compute multiple metrics
+                    accuracy = (logits.argmax(dim=1) == labels).float().mean()
+                    mean_embedding_norm = embeddings.norm(dim=-1).mean()
+
+                    self.writer.add_scalar("accuracy", accuracy.item())
+                    self.writer.add_scalar("embedding_norm", mean_embedding_norm.item())
+
+        Using a subset of the dataset for faster evaluation:
+
+        .. code-block:: python
+
+            class FastValidationCallback(PeriodicIteratorCallback):
+                def _register_sampler_config(self) -> SamplerIntervalConfig:
+                    # Only use first 1000 samples for quick validation
+                    return self._sampler_config_from_key(key="validation", max_size=1000)
+
+    Attributes:
+        _sampler_config: Configuration for the sampler that controls dataset iteration. Automatically set when
+            `register_sampler_config` is called.
+        total_data_time: Cumulative time spent waiting for data loading across all periodic callbacks.
+
+    Note:
+        * Child classes should NOT override `register_sampler_config`, `_iterate_over_dataset`, or
+          `_periodic_callback`. Override the template methods (`_register_sampler_config`, `_forward`,
+          `_process_results`) instead.
+        * The `_forward` method is called within a `torch.no_grad()` context automatically.
+        * For distributed training, results are automatically gathered across all ranks with proper padding removal.
+    """
+
+    _sampler_config: SamplerIntervalConfig | None = None
+
+    def __init__(
+        self,
+        callback_config: CallBackBaseConfig,
+        trainer: BaseTrainer,
+        model: ModelBase,
+        data_container: DataContainer,
+        tracker: BaseTracker,
+        log_writer: LogWriter,
+        checkpoint_writer: CheckpointWriter,
+        metric_property_provider: MetricPropertyProvider,
+        name: str | None = None,
+    ):
+        super().__init__(
+            callback_config,
+            trainer,
+            model,
+            data_container,
+            tracker,
+            log_writer,
+            checkpoint_writer,
+            metric_property_provider,
+            name,
+        )
+
+        self.total_data_time = 0.0
+
+        if not (type(self).register_sampler_config == PeriodicIteratorCallback.register_sampler_config):
+            raise AssertionError("Children shouldn't override 'register_sampler_configs'")
+        # this might be confused with register_sampler_configs method and accidentally overwritten
+        if not (type(self)._sampler_config_from_key == PeriodicIteratorCallback._sampler_config_from_key):
+            raise AssertionError("Children shouldn't override '_sampler_config_from_key'")
+
+    def _sampler_config_from_key(
+        self, key: str | None, properties: set[str] | None = None, max_size: int | None = None
+    ) -> SamplerIntervalConfig:
+        """Registers the dataset that is used for this callback in the dataloading pipeline.
+
+        Args:
+            key: Key for identifying the dataset from `self.data_container`. Uses the first dataset if `None`.
+            properties: Optionally specifies a subset of properties to load from the dataset.
+            max_size: If provided, only uses a subset of the full dataset. Default: None (no subset).
+
+        Returns:
+            How many sampler_configs were registered before this call (used as identifier to assert that callbacks
+                that register multiple sampler_configs also iterate over the datasets in the correct order).
+        """
+        dataset = self.data_container.get_dataset(key=key, properties=properties, max_size=max_size)
+        config = self._create_sampler_config(dataset=dataset, pipeline=dataset.pipeline)
+        self.logger.info(f"{self} registered sampler {key} of {dataset} using {config.pipeline}")
+        return config
+
+    def _create_sampler_config(self, dataset: Dataset, pipeline=None) -> SamplerIntervalConfig:
+        assert len(dataset) > 0
+        return SamplerIntervalConfig(
+            sampler=DistributedSampler(dataset, shuffle=False) if is_distributed() else SequentialSampler(dataset),
+            every_n_epochs=self.every_n_epochs,
+            every_n_updates=self.every_n_updates,
+            every_n_samples=self.every_n_samples,
+            pipeline=pipeline,
+            batch_size=self.batch_size,
+        )
+
+    def register_sampler_config(self) -> SamplerIntervalConfig:
+        """Registers the datasets that are used for this callback into the dataloading pipeline.
+
+        Args:
+            trainer: Trainer of the current run.
+
+        Returns:
+            The registered sampler_config
+        """
+        if self._sampler_config is not None:
+            raise RuntimeError("register_sampler_configs should only be called once per callback")
+
+        self._sampler_config = self._register_sampler_config()
+        return self._sampler_config
+
+    def _register_sampler_config(self) -> SamplerIntervalConfig:
+        """Template method for `register_sampler_configs`. By default, no sampler_configs are registered.
+
+        Args:
+            trainer: Trainer of the current run.
+        """
+        if hasattr(self, "dataset_key") and self.dataset_key is not None:
+            return self._sampler_config_from_key(key=self.dataset_key)
+        else:
+            raise NotImplementedError
+
+    @abstractmethod
+    def _forward(self, batch, *, trainer_model: torch.nn.Module) -> Any:
+        """Template method that is called for each batch that is loaded from the dataset.
+
+        Args:
+            batch: The loaded batch.
+            trainer_model: Model of the current training run.
+        """
+        ...
+
+    def _process_results(self, results: Any, *, interval_type, update_counter: UpdateCounter, **_) -> None:
+        """Template method that is called with the collated results that were produced by `iterate_over_dataset`.
+
+        Args:
+            results: The collated results that were produced by `_iterate_over_dataset`.
+            interval_type: The type of interval that triggered this callback invocation.
+            update_counter: The current update counter.
+        """
+
+    def _iterate_over_dataset(
+        self,
+        batch_size: int,
+        data_iter: Iterator,
+        trainer_model,
+    ) -> Any:
+        """Iterates over the registered dataset. For each loaded batch, the provided
+        `forward_fn` is called. The result of the `forward_fn` is stored, postprocessed, collated and then returned.
+        The postprocessing step ensures that padding for distributed evaluation is cut off by gathering results across
+        all ranks and cutting away padded entries.
+
+        Args:
+            forward_fn: Function that maps a batch of inputs to a batch of outputs.
+            batch_size: `batch_size` that is used for training. Used by default if `self.batch_size is None`.
+            data_iter: Iterator of the dataloading pipeline to fetch batches according to the registered
+                sampler_configs.
+            trainer_model: Model of the current training run.
+
+        Returns:
+            The collated results that are produced by iterating over the dataset, passing the samples through the
+                `forward_fn` and then collating the results (i.e, concat them and gather them across ranks).
+
+        Notes:
+            Collation is not implemented for arbitrary objects that the `forward_fn` returns. It is suggested that
+                `forward_fn` returns a dictionary of scalars.
+        """
+        if self._sampler_config is None:
+            raise ValueError("Sampler config not registered. Did you forget to call register_sampler_config()?")
+        config = self._sampler_config
+        sampler: Any = config.sampler
+
+        if isinstance(sampler, DistributedSampler):
+            global_dataset_len = len(sampler.dataset)  # type: ignore
+        else:
+            global_dataset_len = len(sampler)
+        local_dataset_len = len(sampler)
+        num_batches = math.ceil(local_dataset_len / (config.batch_size or batch_size))
+
+        # iterate
+        data_times = []
+        forward_results = []
+        pbar_ctor = NoopTqdm if not sys.stdout.isatty() or not is_rank0() else tqdm
+        for _ in pbar_ctor(iterable=range(num_batches)):
+            with Stopwatch() as data_sw:
+                batch = next(data_iter)
+                batch = move_items_to_device(self.trainer.device, batch)
+            data_times.append(data_sw.elapsed_seconds)
+
+            forward_results.append(self._forward(batch, trainer_model=trainer_model))
+
+        mean_data_time = float(np.mean(data_times))
+        self.logger.info(f"waited {mean_data_time:.2f}s for dataloading")
+        self.total_data_time += mean_data_time
+
+        single_output = False
+        if not isinstance(forward_results[0], tuple):
+            forward_results = [(fwr,) for fwr in forward_results]
+            single_output = True
+        collated = [
+            self._collate_result(result, global_dataset_len=global_dataset_len)
+            for result in zip(*forward_results, strict=True)
+        ]
+
+        if single_output:
+            return collated[0]
+
+        return collated
+
+    def _periodic_callback(  # type: ignore[override]
+        self,
+        *,
+        interval_type: IntervalType,
+        update_counter: UpdateCounter,
+        data_iter: Iterator,
+        trainer_model,
+        batch_size: int,
+        **_,
+    ) -> None:
+        results = self._iterate_over_dataset(
+            batch_size=batch_size,
+            data_iter=data_iter,
+            trainer_model=trainer_model,
+        )
+
+        self._process_results(results, interval_type=interval_type, update_counter=update_counter)
+
+    @staticmethod
+    def _collate_tensors(tensors):
+        if tensors[0].ndim == 0:
+            return torch.stack(tensors)
+        return torch.concat(tensors)
+
+    @staticmethod
+    def _collate_result(result, global_dataset_len):
+        if isinstance(result[0], dict):
+            # tuple[dict] -> dict[tensor]
+            result = {k: PeriodicIteratorCallback._collate_tensors([r[k] for r in result]) for k in result[0].keys()}
+            result = {k: all_gather_nograd_clipped(v, global_dataset_len) for k, v in result.items()}
+        else:
+            if isinstance(result[0], list):
+                # List[List[Tensor]] -> List[Tensor]
+                result = [torch.concat(item) for item in zip(*result, strict=True)]
+                result = [all_gather_nograd_clipped(item, global_dataset_len) for item in result]
+            elif result[0] is None:
+                return None
+            else:
+                if torch.is_tensor(result[0]):
+                    # List[Tensor] -> Tensor
+                    if result[0].ndim == 0:
+                        result = torch.stack(result)
+                    else:
+                        result = torch.concat(result)
+                else:
+                    result = torch.tensor(result)
+                result = all_gather_nograd_clipped(result, global_dataset_len)
+        return result
+
+    @torch.no_grad()
+    def _after_training(self, **_) -> None:
+        total_data_time = all_gather_nograd(self.total_data_time)
+        self.logger.info(f"{snake_type_name(self)} total_data_time: {tensor_like_to_string(total_data_time)}")

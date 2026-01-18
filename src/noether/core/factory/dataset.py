@@ -1,0 +1,32 @@
+#  Copyright © 2025 Emmi AI GmbH. All rights reserved.
+
+from typing import Any
+
+from noether.core.factory.base import Factory
+from noether.core.schemas.dataset import DatasetBaseConfig
+
+
+class DatasetFactory(Factory):
+    def __init__(
+        self,
+        dataset_wrapper_factory: Factory | None = None,
+    ):
+        super().__init__()
+        self.dataset_wrapper_factory = dataset_wrapper_factory or Factory()
+
+    def instantiate(self, dataset_config: DatasetBaseConfig, **kwargs) -> Any:  # type: ignore[override]
+        """Instantiates the dataset either based on `dataset_config` or from the checkpoint."""
+
+        dataset_wrappers = dataset_config.dataset_wrappers
+        dataset = super().instantiate(dataset_config)
+
+        # wrap with dataset_wrappers
+        if dataset_wrappers is not None:
+            if not isinstance(dataset_wrappers, list):
+                raise ValueError("dataset_wrappers must be a list of dataset wrapper configs")
+
+            for dataset_wrapper_config in dataset_wrappers:
+                dataset_wrapper_kind = dataset_wrapper_config.kind
+                self.logger.info(f" Instantiating dataset_wrapper: {dataset_wrapper_kind}")
+                dataset = self.dataset_wrapper_factory.instantiate(dataset_wrapper_config, dataset=dataset)
+        return dataset

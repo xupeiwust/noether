@@ -1,0 +1,58 @@
+#  Copyright © 2025 Emmi AI GmbH. All rights reserved.
+
+import os
+import sys
+from pathlib import Path
+
+from omegaconf import DictConfig, OmegaConf
+
+
+def _rewrite_hydra_args(relpath, insert_at: int):
+    hp = Path(os.getcwd()) / relpath
+    if not hp.exists():
+        raise FileNotFoundError(f"--hp file does not exist ('{hp.as_posix()}')")
+
+    cn = hp.name
+    cp = hp.parent.as_posix()
+    sys.argv.insert(insert_at, "-cp")
+    sys.argv.insert(insert_at + 1, cp)
+    sys.argv.insert(insert_at + 2, "-cn")
+    sys.argv.insert(insert_at + 3, cn)
+
+    # backup the --hp argument to log it to the tracker (hydra operates on absolute path)
+    os.environ["KSUIT_MAIN_TRAIN_CONFIG_PATH_RELATIVE"] = relpath
+
+
+def setup_hydra():
+    # allow --hp examples/yamls/train.yaml instead of having to specify -cp /home/USER/core/examples/yamls --cn train.yaml
+    if len(sys.argv) < 2:
+        print("Provide path to a config yaml file as first argument or --hp <path>", file=sys.stderr)
+        sys.exit(1)
+    if sys.argv[1].endswith(".yaml"):
+        relpath = sys.argv.pop(1)
+        _rewrite_hydra_args(relpath, 1)
+    else:
+        i = 0
+        while i < len(sys.argv) - 1:
+            if sys.argv[i] == "--hp":
+                if not sys.argv[i + 1].endswith(".yaml"):
+                    raise ValueError(f"invalid --hp file {sys.argv[i + 1]}")
+                sys.argv.pop(i)  # remove --hp
+                relpath = sys.argv.pop(i)
+                _rewrite_hydra_args(relpath, i)
+                break
+            i += 1
+
+    # Disable hydra creating output dir and storing config in output folder.
+    sys.argv.extend(
+        ["hydra.run.dir=.", "hydra.output_subdir=null", "hydra/hydra_logging=disabled", "hydra/job_logging=disabled"]
+    )
+
+    # allow collator: ${seed:${vars.collator},0} in yaml
+    def seed(x: DictConfig, y: int) -> DictConfig:
+        assert isinstance(x, DictConfig)
+        assert "seed" not in x
+        assert isinstance(y, int)
+        return DictConfig(content=dict(**x, seed=y))
+
+    OmegaConf.register_new_resolver("seed", seed)

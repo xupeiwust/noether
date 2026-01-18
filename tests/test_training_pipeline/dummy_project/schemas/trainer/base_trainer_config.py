@@ -1,0 +1,16 @@
+#  Copyright © 2025 Emmi AI GmbH. All rights reserved.
+
+from typing import Union
+
+from dummy_project.schemas.callbacks.base_callback_config import BaseCallbackConfig
+from pydantic import Field
+
+from noether.core.schemas import BaseTrainerConfig
+from noether.core.schemas.callbacks import CallbacksConfig
+
+AllCallbacks = Union[BaseCallbackConfig | CallbacksConfig]  #
+
+
+class BaseTrainerConfig(BaseTrainerConfig):
+    input_dim: int
+    callbacks: list[AllCallbacks] | None = Field(..., description="List of callback configurations")

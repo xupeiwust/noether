@@ -1,0 +1,37 @@
+name: Remove docs built for a pull request
+
+on:
+  pull_request:
+    types:
+      # closed runs any time the PR is merged or closed
+      - closed
+
+jobs:
+  remove-pr-docs:
+    runs-on: ubuntu-latest
+    if: contains(github.event.pull_request.labels.*.name, 'build-docs')
+    steps:
+      - name: Checkout core-docs repos
+        uses: actions/checkout@v4
+        with:
+          repository: Emmi-AI/core-docs
+          ref: gh-pages
+          token: ${{ secrets.CORE_DOCS_REPO_TOKEN }}
+          path: core-docs
+
+      - name: Remove docs from core-docs repos
+        env:
+          TARGET_REPO: 'Emmi-AI/core-docs'
+          TARGET_BRANCH: 'gh-pages'
+        run: |
+          git config --global user.name 'github-actions'
+          git config --global user.email 'github-actions@github.com'
+
+          TARGET_DIR="core-docs/${GITHUB_HEAD_REF/\//-}"
+
+          rm -r "$TARGET_DIR"
+
+          cd core-docs/
+          git add .
+          git commit -m 'Remove documentation of closed PR' || echo 'No changes to commit'
+          git push origin ${TARGET_BRANCH}

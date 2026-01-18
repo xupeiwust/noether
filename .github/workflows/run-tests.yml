@@ -1,0 +1,71 @@
+name: tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [ "**" ]        # PRs into any branch (incl. main)
+  push:
+    branches: [ main ]        # merge commit on protected main
+  workflow_dispatch: {}       # manual runs for any branch
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit-tests:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Install uv + enable cache keyed by pyproject/uv.lock across repo
+      - name: Setup uv (with cache)
+        id: setup-uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          # default glob already includes **/pyproject.toml and **/uv.lock;
+          # keep explicit for clarity in monorepos
+#          cache-dependency-glob: |
+#            **/pyproject.toml
+#            **/uv.lock
+
+      # Monorepo: root pyproject + [tool.uv.sources] installs src/* editably
+      - name: Install dependencies
+        run: |
+          if [ -f uv.lock ]; then
+            uv sync --frozen      # respect lock if present
+          else
+            uv sync               # otherwise resolve fresh
+          fi
+
+#      - name: Install pytest-cov
+#        run: uv pip install pytest-cov
+
+      - name: Show env (brief)
+        run: |
+          python -V
+          uv pip list | head -n 200
+
+      - name: Run tests
+        run: |
+          uv run pytest -q ./tests \
+            --maxfail=1 --disable-warnings \
+            --cov=src --cov-report=term-missing:skip-covered \
+            --cov-report=xml:coverage.xml \
+            --junitxml=pytest.xml
+      - name: Post Coverage Comment
+        uses: MishaKav/pytest-coverage-comment@main
+        with:
+          pytest-xml-coverage-path: ./coverage.xml
+          junitxml-path: ./pytest.xml
+          hide-report: true
+          xml-skip-covered: true
