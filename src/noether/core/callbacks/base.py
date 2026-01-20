@@ -50,6 +50,17 @@ class CallbackBase:
                 format_str=".2f",
             )
 
+    Classes that inherit from `CallbackBase` get access to the following dependencies:
+    - trainer (BaseTrainer): access to the current trainer
+    - model (ModelBase): access to the current model
+    - data_container (DataContainer): access to all datasets that were initialized for the current run
+    - tracker (BaseTracker): access to the tracker object to log metrics to stdout/disk/online platform
+    - path_provider (PathProvider): access to paths (e.g., output_path: where checkpoints/logs are stored)
+    - metric_property_provider (MetricPropertyProvider): defines properties of metrics (e.g., for a loss, lower values
+    - writer (LogWriter): access to the log writer to log metrics to stdout/disk/online platform
+    - checkpoint_writer (CheckpointWriter): access to the checkpoint writer to store checkpoints during training
+      are better wheras for an accuracy, higher values are better)
+
 
     As evaluations are pretty much always done in torch.no_grad() contexts, the hooks implemented by callbacks
     automatically apply the torch.no_grad() context. Therefore, the `CallbackBase` class makes use of the "template
