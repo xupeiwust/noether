@@ -34,7 +34,7 @@ class CheckpointInitializer(InitializerBase):
         self.load_optim = initializer_config.load_optim
         self.model_info = initializer_config.model_info
         self.pop_ckpt_kwargs_keys = initializer_config.pop_ckpt_kwargs_keys or []
-        self.stage_name = initializer_config.stage_name or self.path_provider.stage_name
+        self.stage_name = initializer_config.stage_name
         self.init_run_path_provider = self.path_provider.with_run(
             run_id=self.run_id,
             stage_name=self.stage_name,
