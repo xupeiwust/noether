@@ -36,7 +36,7 @@ class PathProvider:
         return PathProvider(
             output_root_path=self.output_root,
             run_id=run_id if run_id is not None else self.run_id,
-            stage_name=stage_name if stage_name is not None else self.stage_name,
+            stage_name=stage_name,
         )
 
     @property
@@ -116,7 +116,7 @@ class PathProvider:
             link_path.unlink()
         link_path.symlink_to(ancestor.run_output_path)
 
-        if self.stage_name != ancestor.stage_name:
+        if self.run_id != ancestor.run_id or self.stage_name != ancestor.stage_name:
             if self.stage_name is not None:
                 ancestor_link_path = ancestor.output_root / ancestor.run_id / self.stage_name / self.run_id
             else:
