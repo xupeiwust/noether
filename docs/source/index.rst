@@ -1,5 +1,5 @@
 Noether Framework Documentation
-============================
+===============================
 
 Welcome to the Noether Framework documentation. Here you will find available APIs, CLIs, etc.
 
@@ -52,9 +52,10 @@ Welcome to the Noether Framework documentation. Here you will find available API
    :maxdepth: 2
    :caption: Explanation
    :hidden:
+   :glob:
 
-   Overview <explanation/index>
-   emmi_data_management/caching
+   explanation/introduction_to_noether_framework
+   explanation/*
 
 .. toctree::
    :maxdepth: 2
