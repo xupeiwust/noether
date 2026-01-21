@@ -18,7 +18,9 @@ def test_instantiate_no_wrappers():
     """Test instantiation when config has no wrappers."""
     factory = DatasetFactory()
 
-    mock_config = SimpleNamespace(dataset_wrappers=None, kind="MyDataset")
+    mock_config = SimpleNamespace(
+        dataset_wrappers=None, kind="MyDataset", included_properties=None, excluded_properties=None
+    )
 
     # Mock super().instantiate behavior
     # We patch 'noether.core.factory.dataset.Factory.instantiate' which is the parent method
@@ -42,7 +44,8 @@ def test_instantiate_with_wrappers():
     mock_config = SimpleNamespace(
         dataset_wrappers=[wrapper1_cfg, wrapper2_cfg],
         kind="BaseDataset",
-        config=SimpleNamespace(included_properties=None, excluded_properties=None),
+        included_properties=None,
+        excluded_properties=None,
     )
 
     with patch("noether.core.factory.dataset.Factory.instantiate") as mock_super_inst:
