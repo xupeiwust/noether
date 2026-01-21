@@ -162,24 +162,6 @@ def test_double_wrapping_mode_wrapper(mock_dataset):
         assert second_wrapper[i] == expected_item
 
 
-def test_double_wrapping_mode_wrapper_2(mock_dataset):
-    """Test that wrapping a ModeWrapper with another ModeWrapper works correctly."""
-
-    first_wrapper = RepeatWrapper(dataset=mock_dataset, config=RepeatWrapperConfig(repetitions=2, kind=""))
-    second_wrapper = PropertySubsetWrapper(dataset=first_wrapper, properties={"x", "y"})
-
-    idx = 3
-    expected_item = {
-        "y": f"y_{idx}",
-        "x": f"x_{idx}",
-    }
-    assert len(second_wrapper) == len(first_wrapper)
-    assert second_wrapper[idx] == expected_item
-
-    for i in range(len(second_wrapper)):
-        second_wrapper[i]
-
-
 def test_double_property_wrapper(mock_dataset):
     """Test that wrapping a PropertySubsetWrapper with another PropertySubsetWrapper works correctly."""
     first_wrapper = PropertySubsetWrapper(dataset=mock_dataset, properties={"x", "y"})
@@ -198,6 +180,24 @@ def test_double_property_wrapper(mock_dataset):
             "y": f"y_{original_idx}",
         }
         assert second_wrapper[i] == expected_item
+
+
+def test_double_wrapping_mode_wrapper_2(mock_dataset):
+    """Test that wrapping a ModeWrapper with another ModeWrapper works correctly."""
+
+    first_wrapper = RepeatWrapper(dataset=mock_dataset, config=RepeatWrapperConfig(repetitions=2, kind=""))
+    second_wrapper = PropertySubsetWrapper(dataset=first_wrapper, properties={"x", "y"})
+
+    idx = 3
+    expected_item = {
+        "y": f"y_{idx}",
+        "x": f"x_{idx}",
+    }
+    assert len(second_wrapper) == len(first_wrapper)
+    assert second_wrapper[idx] == expected_item
+
+    for i in range(len(second_wrapper)):
+        second_wrapper[i]
 
 
 def test_double_property_wrapper_2(mock_dataset):

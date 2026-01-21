@@ -22,7 +22,7 @@ class DatasetFactory(Factory):
         dataset_wrappers = dataset_config.dataset_wrappers
         dataset = super().instantiate(dataset_config)
 
-        if dataset.config.included_properties is not None or dataset.config.excluded_properties is not None:
+        if dataset_config.included_properties is not None or dataset_config.excluded_properties is not None:
             from noether.data.base.wrappers.property_subset import PropertySubsetWrapper  # avoid circular import
 
             dataset = PropertySubsetWrapper.from_included_excluded(
