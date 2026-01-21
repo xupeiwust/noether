@@ -865,13 +865,13 @@ The statistics need to be manually added to a YAML file in [**`configs/dataset_s
 
 The `Noether Framework` includes pre-implemented datasets for CFD aerodynamics in [`noether.data.datasets.cfd`](../src/noether/data/datasets/cfd/):
 
-| Dataset | Class Path |
-|---------|------------|
-| **ShapeNet-Car** | [noether.data.datasets.cfd.ShapeNetCarDataset](../src/noether/data/datasets/cfd/shapenet_car/dataset.py) |
-| **AhmedML** | [noether.data.datasets.cfd.AhmedMLDataset](../src/noether/data/datasets/cfd/caeml/ahmedml/dataset.py) |
-| **DrivAerML** | [noether.data.datasets.cfd.DrivAerMLDataset](../src/noether/data/datasets/cfd/caeml/drivaerml/dataset.py) |
-| **DrivAerNet++** | [noether.data.datasets.cfd.DrivAerNetDataset](../src/noether/data/datasets/cfd/drivaernet/dataset.py) |
-| **Wing Dataset** | [noether.data.datasets.cfd.EmmiWingDataset](../src/noether/data/datasets/cfd/caeml/ahmedml/dataset.py) |
+| Dataset | Class Path | Data processing README |
+|---------|------------|------------------------|
+| **ShapeNet-Car** | [noether.data.datasets.cfd.ShapeNetCarDataset](../src/noether/data/datasets/cfd/shapenet_car/dataset.py) | [README.ME](../src/noether/data/datasets/cfd/shapenet_car/README.MD) |
+| **AhmedML** | [noether.data.datasets.cfd.AhmedMLDataset](../src/noether/data/datasets/cfd/caeml/ahmedml/dataset.py) | [README.ME](../src/noether/data/datasets/cfd/caeml/README.MD) |
+| **DrivAerML** | [noether.data.datasets.cfd.DrivAerMLDataset](../src/noether/data/datasets/cfd/caeml/drivaerml/dataset.py) | [README.ME](../src/noether/data/datasets/cfd/caeml/README.MD) |
+| **DrivAerNet++** | [noether.data.datasets.cfd.DrivAerNetDataset](../src/noether/data/datasets/cfd/drivaernet/dataset.py) | [README.ME](../src/noether/data/datasets/cfd/drivaernet/README.MD) |
+| **Wing Dataset** | [noether.data.datasets.cfd.EmmiWingDataset](../src/noether/data/datasets/cfd/caeml/ahmedml/dataset.py) | [README.ME](../src/noether/data/datasets/cfd/emmi_wing/README.MD) |
 
 All datasets share the `AeroDataset` interface, ensuring consistent access patterns and easy switching between datasets.
 
