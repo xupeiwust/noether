@@ -530,6 +530,7 @@ class BaseTrainer:
             dist_model = DistributedDataParallel(
                 model,
                 find_unused_parameters=self.config.find_unused_params,
+                # device_ids=[self.device.index] if self.device.type == "cuda" else None,  # added for completeness
                 static_graph=self.config.static_graph,
             )
         else:
