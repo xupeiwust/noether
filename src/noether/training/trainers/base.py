@@ -355,12 +355,10 @@ class BaseTrainer:
     def state_dict(self) -> dict[str, Any]:
         """Get the state dict of the trainer."""
         callback_state_dicts = [callback.state_dict() for callback in self.callbacks]
-        state_dict: dict[str, Any] = dict(
-            epoch=self.update_counter.cur_iteration.epoch,
-            update=self.update_counter.cur_iteration.update,
-            sample=self.update_counter.cur_iteration.sample,
-            callback_state_dicts=callback_state_dicts,
-        )
+        state_dict: dict[str, Any] = {
+            CheckpointKeys.CALLBACK_STATE_DICT: callback_state_dicts,
+            CheckpointKeys.TRAINING_ITERATION: dict(self.update_counter.cur_iteration),
+        }
         if isinstance(self.grad_scaler, GradScaler):
             state_dict[CheckpointKeys.GRAD_SCALER] = self.grad_scaler.state_dict()
         return state_dict
