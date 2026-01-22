@@ -152,6 +152,12 @@ source .venv/bin/activate
 uv pip install emmiai-noether
 ```
 
+If the built package is not available, you can build it from source:
+
+```bash
+uv pip install ..
+```
+
 ### Boilerplate project
 
 The [`boilerplate_project/`](../boilerplate_project) directory contains a minimal working example that demonstrates the essential components needed for training in the `Noether Framework`. This stripped-down project is useful for:
