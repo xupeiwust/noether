@@ -130,8 +130,8 @@ Learn more about different hardware support [here](https://noether-docs.emmi.ai/
 ---
 # Performance Benchmarks
 
-The following benchmarks demonstrate **Noether**'s scaling capabilities using the `ShapeNet-Car` dataset 
-and the `AB-UPT` model. 
+The following benchmarks demonstrate **Noether**'s acceleration compatibility over different hardware using 
+the `ShapeNet-Car` dataset and the `AB-UPT` model. 
 
 > [!NOTE]
 > All benchmarks were conducted using **FP32 precision** to establish a baseline for raw computational performance.
