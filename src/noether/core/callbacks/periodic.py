@@ -582,7 +582,7 @@ class PeriodicIteratorCallback(PeriodicCallback, metaclass=ABCMeta):
                 that register multiple sampler_configs also iterate over the datasets in the correct order).
         """
         dataset = self.data_container.get_dataset(key=key, properties=properties, max_size=max_size)
-        config = self._create_sampler_config(dataset=dataset, pipeline=dataset.pipeline)
+        config = self._create_sampler_config(dataset=dataset, pipeline=dataset.pipeline)  # type: ignore
         self.logger.info(f"{self} registered sampler {key} of {dataset} using {config.pipeline}")
         return config
 
