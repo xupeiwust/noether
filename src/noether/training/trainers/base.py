@@ -187,9 +187,6 @@ class BaseTrainer:
     def get_user_callbacks(self, model: ModelBase, evaluation=False) -> list[CallbackBase]:
         callback_default_args = self._get_default_callback_kwargs(model)
         callbacks: list[CallbackBase] = Factory().create_list(self.config.callbacks, **callback_default_args)
-        for cb in callbacks:
-            if not evaluation and isinstance(cb, PeriodicCallback) and cb.evaluation:
-                self.logger.warning(f"Callback {cb} is marked for evaluation but added to training callbacks.")
         return callbacks
 
     def get_all_callbacks(self, model: ModelBase) -> list[CallbackBase]:
@@ -355,12 +352,10 @@ class BaseTrainer:
     def state_dict(self) -> dict[str, Any]:
         """Get the state dict of the trainer."""
         callback_state_dicts = [callback.state_dict() for callback in self.callbacks]
-        state_dict: dict[str, Any] = dict(
-            epoch=self.update_counter.cur_iteration.epoch,
-            update=self.update_counter.cur_iteration.update,
-            sample=self.update_counter.cur_iteration.sample,
-            callback_state_dicts=callback_state_dicts,
-        )
+        state_dict: dict[str, Any] = {
+            CheckpointKeys.CALLBACK_STATE_DICT: callback_state_dicts,
+            CheckpointKeys.TRAINING_ITERATION: dict(self.update_counter.cur_iteration),
+        }
         if isinstance(self.grad_scaler, GradScaler):
             state_dict[CheckpointKeys.GRAD_SCALER] = self.grad_scaler.state_dict()
         return state_dict
@@ -532,6 +527,7 @@ class BaseTrainer:
             dist_model = DistributedDataParallel(
                 model,
                 find_unused_parameters=self.config.find_unused_params,
+                # device_ids=[self.device.index] if self.device.type == "cuda" else None,  # added for completeness
                 static_graph=self.config.static_graph,
             )
         else:
@@ -869,7 +865,7 @@ class BaseTrainer:
         if training:
             self._gradient_step(
                 total_loss=trainer_result.total_loss,
-                model=model if model is not None else dist_model.model,
+                model=model if model is not None else dist_model.model,  # type: ignore[arg-type]
                 accumulation_steps=accumulation_steps,
                 iter_step=iter_step,
                 **kwargs,
@@ -998,4 +994,4 @@ class BaseTrainer:
                 if isinstance(callback, PeriodicIteratorCallback)
                 else {}
             )
-            callback.after_epoch(self.update_counter, **iterator_callback_args)
+            callback.at_eval(self.update_counter, **iterator_callback_args)
